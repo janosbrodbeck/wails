@@ -31,8 +31,10 @@ type linuxSystemTray struct {
 	icon  []byte
 	menu  *Menu
 
-	iconPosition   int
-	isTemplateIcon bool
+	iconPosition          int
+	iconPositionOnScreenX int32
+	IconPositionOnScreenY int32
+	isTemplateIcon        bool
 
 	quitChan  chan struct{}
 	conn      *dbus.Conn
@@ -114,6 +116,11 @@ func (i systrayMenuItem) dbus() *dbusMenu {
 
 func (s *linuxSystemTray) setIconPosition(position int) {
 	s.iconPosition = position
+}
+
+func (s *linuxSystemTray) setIconPositionOnScreen(x, y int32) {
+	s.iconPositionOnScreenX = x
+	s.IconPositionOnScreenY = y
 }
 
 func (s *linuxSystemTray) processMenu(menu *Menu, parentId int32) {
@@ -221,38 +228,69 @@ func (s *linuxSystemTray) setMenu(menu *Menu) {
 }
 
 func (s *linuxSystemTray) positionWindow(window *WebviewWindow, offset int) error {
-	// Get the mouse location on the screen
-	mouseX, mouseY, currentScreen := getMousePosition()
-	screenBounds := currentScreen.Size
+	var newX, newY int
 
-	// Calculate new X position
-	newX := mouseX - (window.Width() / 2)
+	if s.iconPositionOnScreenX == -1 || s.IconPositionOnScreenY == -1 {
+		// No icon position known yet, use mouse position instead
+		// Get the mouse location on the screen
+		mouseX, mouseY, currentScreen := getMousePosition()
+		screenBounds := currentScreen.Size
 
-	// Check if the window goes out of the screen bounds on the left side
-	if newX < 0 {
-		newX = 0
-	}
+		// Calculate new X position
+		newX = mouseX - (window.Width() / 2)
 
-	// Check if the window goes out of the screen bounds on the right side
-	if newX+window.Width() > screenBounds.Width {
-		newX = screenBounds.Width - window.Width()
-	}
+		// Check if the window goes out of the screen bounds on the left side
+		if newX < 0 {
+			newX = 0
+		}
 
-	// Calculate new Y position
-	newY := mouseY - (window.Height() / 2)
+		// Check if the window goes out of the screen bounds on the right side
+		if newX+window.Width() > screenBounds.Width {
+			newX = screenBounds.Width - window.Width()
+		}
 
-	// Check if the window goes out of the screen bounds on the top
-	if newY < 0 {
-		newY = 0
-	}
+		// Calculate new Y position
+		newY = mouseY - (window.Height() / 2)
 
-	// Check if the window goes out of the screen bounds on the bottom
-	if newY+window.Height() > screenBounds.Height {
-		newY = screenBounds.Height - window.Height() - offset
+		// Check if the window goes out of the screen bounds on the top
+		if newY < 0 {
+			newY = 0
+		}
+
+		// Check if the window goes out of the screen bounds on the bottom
+		if newY+window.Height() > screenBounds.Height {
+			newY = screenBounds.Height - window.Height() - offset
+		}
+
+	} else {
+		// Get the current screen
+		screen, err := s.getScreen()
+		if err != nil {
+			return err
+		}
+
+		// Calculate new positions of the window
+		newX = int(s.iconPositionOnScreenX) - (window.Width() / 2)
+		newY = int(s.IconPositionOnScreenY) - offset
+
+		// Check, if the window goes out of the screen bounds on the right side
+		if newX > screen.Size.Width-window.Width() {
+			newX = screen.Size.Width - window.Width()
+		}
+
+		// Check, if the window goes out of the screen bounds on the top
+		if newY < 0 {
+			newY = 0
+		}
+		// Check, if the window goes out of the screen bounds on the bottom
+		if newY > screen.Size.Height {
+			newY = screen.Size.Height
+		}
 	}
 
 	// Set the new position of the window
 	window.SetAbsolutePosition(newX, newY)
+
 	return nil
 }
 
@@ -408,15 +446,17 @@ func newSystemTrayImpl(s *SystemTray) systemTrayImpl {
 	}
 
 	return &linuxSystemTray{
-		parent:         s,
-		id:             s.id,
-		label:          label,
-		icon:           s.icon,
-		menu:           s.menu,
-		iconPosition:   s.iconPosition,
-		isTemplateIcon: s.isTemplateIcon,
-		quitChan:       make(chan struct{}),
-		menuVersion:    1,
+		parent:                s,
+		id:                    s.id,
+		label:                 label,
+		icon:                  s.icon,
+		menu:                  s.menu,
+		iconPosition:          s.iconPosition,
+		iconPositionOnScreenX: -1,
+		IconPositionOnScreenY: -1,
+		isTemplateIcon:        s.isTemplateIcon,
+		quitChan:              make(chan struct{}),
+		menuVersion:           1,
 	}
 }
 
@@ -698,12 +738,14 @@ func (s *linuxSystemTray) GetLayout(parentID int32, recursionDepth int32, proper
 
 // Activate implements org.kde.StatusNotifierItem.Activate method.
 func (s *linuxSystemTray) Activate(x int32, y int32) (err *dbus.Error) {
-	fmt.Println("Activate", x, y)
+	s.setIconPositionOnScreen(x, y)
+	s.parent.clickHandler()
 	return
 }
 
 // ContextMenu is org.kde.StatusNotifierItem.ContextMenu method
 func (s *linuxSystemTray) ContextMenu(x int32, y int32) (err *dbus.Error) {
+	s.setIconPositionOnScreen(x, y)
 	fmt.Println("ContextMenu", x, y)
 	return
 }
@@ -715,6 +757,7 @@ func (s *linuxSystemTray) Scroll(delta int32, orientation string) (err *dbus.Err
 
 // SecondaryActivate implements org.kde.StatusNotifierItem.SecondaryActivate method.
 func (s *linuxSystemTray) SecondaryActivate(x int32, y int32) (err *dbus.Error) {
+	s.setIconPositionOnScreen(x, y)
 	fmt.Println("SecondaryActivate", x, y)
 	return
 }
